@@ -1,3 +1,4 @@
+const AZoneMotionDetector = require('./azoneproto.js');
 var Service, Characteristic;
 
 module.exports = function (homebridge) {
@@ -9,55 +10,79 @@ module.exports = function (homebridge) {
 function AZonePlatform(log, config) {
   this.log = log;
   this.config = config;
-  this.statusCallbacks = {};
-  this.statusTimeout = 0;
 }
 
 AZonePlatform.prototype = {
 
-  accessories: function(callback) {
-    var foundAccessories = this.config.accessories;
-    var myAccessories = [];
-        var accessory = new AZoneAccessory(this.log, this.config, this);
-        this.log('Created ' + accessory.name + ' Accessory');
-        myAccessories.push(accessory);
-      
-    callback(myAccessories);
-  }
+  accessories: function(foundAccessoryCallback) {
+      this.azone = new AZoneMotionDetector(this.config.host,this.config.port,this.config.user,this.config.password);
+      this.azone.on('connect', ()=>{
+                this.log("Connected to " + this.config.host);
+				this.buildAccessoryList();
+				foundAccessoryCallback(this.myDetectors);
+				// With cameras registered, now listen for MD events from DVR and dispatch
+				this.azone.on('motion', (channel, value)=>{
+					var detector = this.myDetectors[channel];
+					if(detector) {
+						detector.setMotion(value);
+						}
+					});
+		});
+	},
 
+	buildAccessoryList: function() {
+		this.myDetectors = [];
+		var devinfo = {"Manufacturer":"AZone","Model":this.azone.SystemInfo.HardWare,"testSwitch":this.config.testSwitch};
+		//search for the user requested cameras by name and create an accessory for each one
+		this.config.cameras.forEach((camera)=>{
+			this.log('Adding '+camera.name);
+			var channel = this.azone.ChannelTitles.indexOf(camera.name);
+			if(channel < 0) {
+				this.log("Camera " + camera.name + " does not exist on DVR. Skipping.");
+				return;
+			}
+			devinfo.name = camera.name;
+			devinfo.SerialNumber = this.azone.SystemInfo.SerialNo + "-" + channel;
+			var detector = new AZoneAccessory(devinfo, this.log);
+			this.myDetectors[channel]=detector;
+		});
+	}
 }
 
-function AZoneAccessory(log,config,azPlatform) {
+function AZoneAccessory(devinfo, log) {
   
   this.log = log;
-  this.name = "PWC AccName";
-  this.azPlatform = azPlatform;
-  this.motionDetected = false;
-}
+  this.name = devinfo.name;
+  this.informationService = new Service.AccessoryInformation();
+  this.informationService
+    .setCharacteristic(Characteristic.Manufacturer, devinfo.Manufacturer)
+    .setCharacteristic(Characteristic.Model, devinfo.Model)
+    .setCharacteristic(Characteristic.SerialNumber, devinfo.SerialNumber);
+
+	this.mdService = new Service.MotionSensor(this.name);
+   
+	//optionally add a switch to debug
+	if(devinfo.testSwitch) { 
+    this.switchService = new Service.Switch(this.name);
+    this.switchService.getCharacteristic(Characteristic.On).on('set', (state,callback)=>{
+			this.setMotion(state);
+			callback(null);
+		});
+	}
+} 
 
 AZoneAccessory.prototype = {
-  
- getState: function (callback) {
-    this.log("Returning state " + this.motionDetected);
-    callback(null, this.motionDetected);
- },
-    
-  getServices: function () {
-    var me = this;
-    let informationService = new Service.AccessoryInformation();
-    informationService
-      .setCharacteristic(Characteristic.Manufacturer, "PWC Manufacturing")
-      .setCharacteristic(Characteristic.Model, "T-100")
-      .setCharacteristic(Characteristic.SerialNumber, "pwc-123-456-789");
-    var mdService = new Service.MotionSensor(me.name);
-    
-    mdService
-      .getCharacteristic(Characteristic.MotionDetected)
-        .on('get', this.getState.bind(this));
- 
-    this.informationService = informationService;
-    this.mdService = mdService;
-    return [informationService, mdService];
-  }
 
+	setMotion: function (value) {
+		this.log("Motion on "+this.name+" = "+value);
+		this.mdService.getCharacteristic(Characteristic.MotionDetected).updateValue(value);
+	}  ,
+  
+	getServices: function () {
+		var offeredServices = [this.informationService, this.mdService];
+		if(this.switchService) {
+			offeredServices.push(this.switchService);
+		}
+		return offeredServices;
+	}
 };
