@@ -1,7 +1,31 @@
 const net = require('net');
 const EventEmitter = require('events');
 const util = require('util');
+const crypto = require('crypto');
 
+/* found algorithm for creating dvr password at
+https://fossies.org/linux/john/src/dahua_fmt_plug.c
+It's the md5 with a simple conversion to characters
+*/
+
+function hashForDVR(password) {
+	var dvrPass = '';
+
+	var pmd = crypto.createHash('md5').update(password).digest()
+	var dvrPass='';
+	for(var i = 0; i<pmd.length; i+=2) {
+		var b = (pmd[i] + pmd[i+1]) %62;
+		if(b < 10) {
+			b += 48;
+		} else if (b < 36) {
+			b += 55;
+		} else {
+			b += 61;
+		}
+	dvrPass = dvrPass.concat(String.fromCharCode(b));
+	}
+	return dvrPass;
+}
 
 class AZoneMotionDetector extends EventEmitter {
 	constructor(host, port, user, password) {
@@ -9,7 +33,7 @@ class AZoneMotionDetector extends EventEmitter {
 	this.host = host;
 	this.port = port;
 	this.user = user;
-	this.password = password;
+	this.password = hashForDVR(password);
 	this.sessionID = 0;
 	this.sequenceNumber = 0;
 	this.netStream = Buffer.allocUnsafe(0);
